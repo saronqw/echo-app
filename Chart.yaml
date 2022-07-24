@@ -1,0 +1,4 @@
+apiVersion: v2
+appVersion: "0.6.0"
+name: echo-app
+version: 0.1.0

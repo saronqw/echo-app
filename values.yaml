@@ -1,0 +1,88 @@
+#### Deployment ####
+# старт с 3 реплик для доступности в каждой зоне
+replicaCount: 3
+
+pod_spec:
+  # неважно с каким exit-кодом падает контейнер, рестарт даже с exit-код равным 0
+  restartPolicy: Always
+  # kill, если graceful не проходит (возможно приложение не реализует graceful shutdown)
+  terminationGracePeriodSeconds: 5
+
+image:
+  repository: ealen/echo-server
+  tag: 0.6.0
+  pullPolicy: IfNotPresent
+
+# https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/
+# располагаем поочерёдно по одному поду на зону
+topologySpreadConstraints:
+  maxSkew: 1
+  topologyKey: topology.kubernetes.io/zone
+  whenUnsatisfiable: ScheduleAnyway
+
+affinity:
+  # по возможности не запускаем под на ноде,
+  # которая уже имеет запущенный под этого приложения
+  podAntiAffinity:
+    topologyKey: kubernetes.io/hostname
+
+strategy:
+  # избегаем downtime при обновлении images
+  rollingUpdate:
+    maxSurge: 25%
+    maxUnavailable: 25%
+  type: RollingUpdate
+
+# "на первые запросы приложению требуется значительно больше ресурсов CPU,
+# в дальнейшем потребление ровное в районе 0.1 CPU.
+# По памяти всегда “ровно” в районе 128M memory"
+resources:
+  requests:
+    memory: "128M"
+    cpu: "100m"
+  limits:
+    # лимит на memory с учётом колебаний
+    memory: "256M"
+    # лимит на cpu с учётом первых запросов
+    cpu: "250m"
+
+# https://github.com/zegl/kube-score/blob/master/README_PROBES.md
+# For applications that take a longer time to boot
+# than the livenessProbes initialDelaySeconds + periodSeconds * failureThreshold,
+# a startupProbe can be configured.
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  failureThreshold: 2
+
+# "приложение требует около 5-10 секунд для инициализации"
+# Блокируем endpoints до инициализации приложения.
+readinessProbe:
+  httpGet:
+    path: /check-readiness
+    port: http
+  periodSeconds: 5
+  failureThreshold: 1
+
+
+#### HorizontalPodAutoscaling ####
+autoscaling:
+  # "по результатам нагрузочного теста известно, что 4 пода справляются с пиковой нагрузкой"
+  # 4 пода будет достаточно, но для повышения доступности и с ограниченным числом нод,
+  # указываем максимальное число реплик до 6 (по 2 реплики на зону)
+  # Был рассмотрен вариант с CronJob для изменения minReplicas в дневное/ночное:
+  # https://medium.com/symbl-ai-engineering-and-data-science/time-based-scaling-for-kubernetes-deployments-9ef7ada93eb7
+  # Данный кейс подразумевает внезапный наплыв на сервисы, а сервисы загружаются долго,
+  # следовательно необходим прераннниг подов на узлах, но это не наш кейс.
+  minReplicas: 3
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 125
+
+
+#### Service ####
+service:
+  type: LoadBalancer
+  port: 80
